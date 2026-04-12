@@ -50,7 +50,10 @@ static id       boolY;
 /**
  * The number of (unicode) characters to fetch from the source at once.
  */
-#define BUFFER_SIZE 64
+/* 4096 unichar = 8KB on stack, fits comfortably in L1 cache,
+ * and reduces buffer-refill overhead by 64x vs the old size of 64.
+ */
+#define BUFFER_SIZE 4096
 
 /**
  * Structure for storing the internal state of the parser.  An instance of this
