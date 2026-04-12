@@ -27,8 +27,10 @@
 #import "Foundation/NSAutoreleasePool.h"
 #import "Foundation/NSData.h"
 #import "Foundation/NSDictionary.h"
+#import "Foundation/NSError.h"
 #import "Foundation/NSException.h"
 #import "Foundation/NSMapTable.h"
+#import "Foundation/NSSet.h"
 #import "Foundation/NSNull.h"
 #import "Foundation/NSValue.h"
 
@@ -161,6 +163,18 @@ static NSMapTable	*globalClassMap = 0;
   id	obj;
 
   /*
+   * Bounds check: ensure index is within valid range for both
+   * _objMap and _objects to prevent out-of-bounds access from
+   * malicious archive data.
+   */
+  if (index >= GSIArrayCount(_objMap) || index >= [_objects count])
+    {
+      [NSException raise: NSInvalidUnarchiveOperationException
+		  format: @"[%@ +%@]: archive index %u out of bounds",
+	NSStringFromClass([self class]), NSStringFromSelector(_cmd), index];
+    }
+
+  /*
    * If the referenced object is already in _objMap
    * we simply return it (the object at index 0 maps to nil)
    */
@@ -221,6 +235,35 @@ static NSMapTable	*globalClassMap = 0;
 		}
 	    }
 	}
+
+      /* If secure coding is enabled, validate the class against the
+       * allowed classes whitelist before instantiation.
+       */
+      if (_requiresSecureCoding && _allowedClasses)
+        {
+          BOOL		allowed = NO;
+          NSEnumerator	*en = [_allowedClasses objectEnumerator];
+          Class		cls;
+
+          while (nil != (cls = [en nextObject]))
+            {
+              if ([c isSubclassOfClass: cls])
+                {
+                  allowed = YES;
+                  break;
+                }
+            }
+          if (NO == allowed)
+            {
+              [NSException raise:
+                NSInvalidUnarchiveOperationException
+                format: @"[%@ +%@]: class '%@' is not in the allowed "
+                @"classes list for secure coding",
+                NSStringFromClass([self class]),
+                NSStringFromSelector(_cmd),
+                NSStringFromClass(c)];
+            }
+        }
 
       savedCursor = _cursor;
       savedKeyMap = _keyMap;
@@ -387,8 +430,37 @@ static NSMapTable	*globalClassMap = 0;
                         fromData: (NSData*)data
                            error: (NSError**)error
 {
-  /* FIXME: implement proper secure coding support */
-  return [self unarchiveObjectWithData: data];
+  NSKeyedUnarchiver	*u = nil;
+  id			o = nil;
+
+  if (error)
+    {
+      *error = nil;
+    }
+
+  NS_DURING
+    {
+      u = [[NSKeyedUnarchiver alloc] initForReadingWithData: data];
+      [u setRequiresSecureCoding: YES];
+      ASSIGN(u->_allowedClasses, classes);
+      o = RETAIN([u decodeObjectForKey: @"root"]);
+      [u finishDecoding];
+      DESTROY(u);
+    }
+  NS_HANDLER
+    {
+      DESTROY(u);
+      DESTROY(o);
+      if (error)
+        {
+          *error = [NSError errorWithDomain: @"NSCocoaErrorDomain"
+                                       code: 4864
+                                   userInfo: @{NSLocalizedDescriptionKey:
+                                     [localException reason]}];
+        }
+    }
+  NS_ENDHANDLER
+  return AUTORELEASE(o);
 }
 
 + (NSArray*) unarchivedArrayOfObjectsOfClass: (Class)cls
@@ -462,6 +534,7 @@ static NSMapTable	*globalClassMap = 0;
 - (void) dealloc
 {
   DESTROY(_archive);
+  DESTROY(_allowedClasses);
   if (_clsMap != 0)
     {
       NSFreeMapTable(_clsMap);
@@ -503,7 +576,25 @@ static NSMapTable	*globalClassMap = 0;
 	NSStringFromClass([self class]), NSStringFromSelector(_cmd), o];
     }
   NSGetSizeAndAlignment(type, &size, NULL);
-  memcpy(buf, [o bytes], expected * size);
+  {
+    size_t totalBytes;
+
+    if (__builtin_mul_overflow(expected, size, &totalBytes))
+      {
+        [NSException raise: NSInvalidUnarchiveOperationException
+                    format: @"[%@ +%@]: size overflow (%lu * %lu)",
+          NSStringFromClass([self class]), NSStringFromSelector(_cmd),
+          (unsigned long)expected, (unsigned long)size];
+      }
+    if ([o length] < totalBytes)
+      {
+        [NSException raise: NSInvalidUnarchiveOperationException
+                    format: @"[%@ +%@]: data too short (%lu < %lu)",
+          NSStringFromClass([self class]), NSStringFromSelector(_cmd),
+          (unsigned long)[o length], (unsigned long)totalBytes];
+      }
+    memcpy(buf, [o bytes], totalBytes);
+  }
 }
 
 - (BOOL) decodeBoolForKey: (NSString*)aKey
