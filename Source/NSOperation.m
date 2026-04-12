@@ -366,7 +366,9 @@ static void     *queuePriorityCtxt = (void*)"queuePriority";
 
 - (void) setCompletionBlock: (GSOperationCompletionBlock)aBlock
 {
+  [internal->lock lock];
   ASSIGNCOPY(internal->completionBlock, (id)aBlock);
+  [internal->lock unlock];
 }
 
 - (void) setQueuePriority: (NSOperationQueuePriority)pri
@@ -562,7 +564,10 @@ static void     *queuePriorityCtxt = (void*)"queuePriority";
 {
   id	blockCopy = (id)Block_copy(block);
 
-  [_executionBlocks addObject: blockCopy];
+  @synchronized(self)
+    {
+      [_executionBlocks addObject: blockCopy];
+    }
   RELEASE(blockCopy);
 }
 
@@ -589,15 +594,25 @@ static void     *queuePriorityCtxt = (void*)"queuePriority";
 
 - (void) main
 {
-  NSEnumerator 		*en = [_executionBlocks objectEnumerator];
-  GSBlockOperationBlock theBlock;
+  NSArray *snapshot;
 
-  while ((theBlock = (GSBlockOperationBlock)[en nextObject]) != NULL)
+  @synchronized(self)
     {
-      CALL_NON_NULL_BLOCK_NO_ARGS(theBlock);
+      snapshot = [_executionBlocks copy];
+      [_executionBlocks removeAllObjects];
     }
 
-  [_executionBlocks removeAllObjects];
+  {
+    NSEnumerator 		*en = [snapshot objectEnumerator];
+    GSBlockOperationBlock theBlock;
+
+    while ((theBlock = (GSBlockOperationBlock)[en nextObject]) != NULL)
+      {
+        CALL_NON_NULL_BLOCK_NO_ARGS(theBlock);
+      }
+  }
+
+  RELEASE(snapshot);
 }
 @end
 

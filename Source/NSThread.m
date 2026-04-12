@@ -1187,7 +1187,7 @@ unregisterActiveThread(NSThread *thread)
 
 - (void) cancel
 {
-  _cancelled = YES;
+  __atomic_store_n(&_cancelled, YES, __ATOMIC_RELEASE);
 }
 
 - (void) dealloc
@@ -1319,7 +1319,7 @@ unregisterActiveThread(NSThread *thread)
 
 - (BOOL) isCancelled
 {
-  return _cancelled;
+  return __atomic_load_n(&_cancelled, __ATOMIC_ACQUIRE);
 }
 
 - (BOOL) isExecuting
@@ -1516,7 +1516,7 @@ nsthreadLauncher(void *thread)
         NSStringFromClass([self class]),
         NSStringFromSelector(_cmd)];
     }
-  if (_cancelled == YES)
+  if (__atomic_load_n(&_cancelled, __ATOMIC_ACQUIRE) == YES)
     {
       [NSException raise: NSInternalInconsistencyException
                   format: @"[%@-%@] called on cancelled thread",
