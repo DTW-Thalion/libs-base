@@ -3078,7 +3078,7 @@ checkPL(id aPropertyList, NSPropertyListFormat aFormat)
 	  [NSException raise: NSGenericException
 		      format: @"Unknown table size %d", saved];
 	}
-      else if (table_start + object_count * offset_size > _length)
+      else if (offset_size > 0 && object_count > (_length - table_start) / offset_size)
         {
 	  DESTROY(self);	// Bad format
 	  [NSException raise: NSGenericException
@@ -3136,9 +3136,21 @@ checkPL(id aPropertyList, NSPropertyListFormat aFormat)
   unsigned      count;
   unsigned      pos;
 
-NSAssert(0 != counter, NSInvalidArgumentException);
+  /* RB-14: Replace NSAssert with runtime checks that work in Release builds.
+   */
+  if (0 == counter)
+    {
+      [NSException raise: NSInvalidArgumentException
+                  format: @"readObjectIndexAt: NULL counter argument"];
+    }
   pos = *counter;
-NSAssert(pos + index_size < _length, NSInvalidArgumentException);
+  if (pos + index_size >= _length)
+    {
+      [NSException raise: NSRangeException
+                  format: @"readObjectIndexAt: index at %u (size %u)"
+                          @" beyond data length %u",
+                          pos, index_size, (unsigned)_length];
+    }
   index = _bytes[pos++];
   for (count = 1; count < index_size; count++)
     {

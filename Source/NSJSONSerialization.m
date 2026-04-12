@@ -104,6 +104,14 @@ typedef struct ParserStateStruct
    * Error value, if this parser is currently in an error state, nil otherwise.
    */
   NSError *error;
+  /**
+   * Current nesting depth for arrays/objects.
+   */
+  int depth;
+  /**
+   * Maximum allowed nesting depth (default 512).
+   */
+  int maxDepth;
 } ParserState;
 
 /**
@@ -564,12 +572,59 @@ parseNumber(ParserState *state)
     }
     // Add a null terminator on the buffer.
     BUFFER(0);
-    num = strtod(number, 0);
-    if (number != numberBuffer)
-      {
-        free(number);
-      }
-    return [[NSNumber alloc] initWithDouble: num];
+
+    /* RB-13: Use integer parsing for values without '.' or 'e'/'E' to
+     * preserve precision.  Check errno == ERANGE after conversion.
+     */
+    {
+      BOOL isFloat = NO;
+      const char *scan = number;
+
+      if (*scan == '-') scan++;
+      while (*scan)
+        {
+          if (*scan == '.' || *scan == 'e' || *scan == 'E')
+            {
+              isFloat = YES;
+              break;
+            }
+          scan++;
+        }
+
+      if (isFloat)
+        {
+          errno = 0;
+          num = strtod(number, 0);
+          if (number != numberBuffer)
+            {
+              free(number);
+            }
+          if (errno == ERANGE)
+            {
+              if (num == 0.0)
+                return [[NSNumber alloc] initWithDouble: 0.0];
+              /* For overflow, return +/-HUGE_VAL wrapped in NSNumber */
+            }
+          return [[NSNumber alloc] initWithDouble: num];
+        }
+      else
+        {
+          long long ival;
+
+          errno = 0;
+          ival = strtoll(number, 0, 10);
+          if (number != numberBuffer)
+            {
+              free(number);
+            }
+          if (errno == ERANGE)
+            {
+              /* Overflow: fall back to double */
+              return [[NSNumber alloc] initWithDouble: (double)ival];
+            }
+          return [[NSNumber alloc] initWithLongLong: ival];
+        }
+    }
 #undef BUFFER
 }
 /**
@@ -581,11 +636,17 @@ parseArray(ParserState *state)
   unichar c = consumeSpace(state);
   NSMutableArray *array;
 
+  if (state->depth >= state->maxDepth)
+    {
+      parseError(state);
+      return nil;
+    }
   if (c != '[')
     {
       parseError(state);
       return nil;
     }
+  state->depth++;
   // Eat the [
   consumeChar(state);
   array = [NSMutableArray new];
@@ -597,6 +658,7 @@ parseArray(ParserState *state)
       if (nil == obj)
         {
           [array release];
+          state->depth--;
           return nil;
         }
       [array addObject: obj];
@@ -610,6 +672,7 @@ parseArray(ParserState *state)
     }
   // Eat the trailing ]
   consumeChar(state);
+  state->depth--;
   if (!state->mutableContainers)
     {
       if (NO == [array makeImmutable])
@@ -629,11 +692,17 @@ parseObject(ParserState *state)
   unichar c = consumeSpace(state);
   NSMutableDictionary *dict;
 
+  if (state->depth >= state->maxDepth)
+    {
+      parseError(state);
+      return nil;
+    }
   if (c != '{')
     {
       parseError(state);
       return nil;
     }
+  state->depth++;
   // Eat the {
   consumeChar(state);
   dict = [NSMutableDictionary new];
@@ -646,6 +715,7 @@ parseObject(ParserState *state)
       if (nil == key)
         {
           [dict release];
+          state->depth--;
           return nil;
         }
       c = consumeSpace(state);
@@ -653,6 +723,7 @@ parseObject(ParserState *state)
         {
           [key release];
           [dict release];
+          state->depth--;
           parseError(state);
           return nil;
         }
@@ -663,6 +734,7 @@ parseObject(ParserState *state)
         {
           [key release];
           [dict release];
+          state->depth--;
           return nil;
         }
       [dict setObject: obj forKey: key];
@@ -677,6 +749,7 @@ parseObject(ParserState *state)
     }
   // Eat the trailing }
   consumeChar(state);
+  state->depth--;
   if (!state->mutableContainers)
     {
       if (NO == [dict makeImmutable])
@@ -1143,6 +1216,8 @@ writeObject(id obj, NSMutableString *output, NSInteger tabs, NSJSONWritingOption
   ParserState p = { 0 };
   id obj;
 
+  p.depth = 0;
+  p.maxDepth = 512;
   [data getBytes: BOM length: 4];
   getEncoding(BOM, &p);
   p.source = [[NSString alloc] initWithData: data encoding: p.enc];
@@ -1168,6 +1243,8 @@ writeObject(id obj, NSMutableString *output, NSInteger tabs, NSJSONWritingOption
   ParserState p = { 0 };
   id obj;
 
+  p.depth = 0;
+  p.maxDepth = 512;
   // TODO: Handle failure here!
   [stream read: (uint8_t*)BOM maxLength: 4];
   getEncoding(BOM, &p);
