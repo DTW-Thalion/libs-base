@@ -116,6 +116,7 @@ static NSString	*httpVersion = @"1.1";
   unsigned char		challenged;
   NSFileHandle          *sock;
   NSTimeInterval        cacheAge;
+  NSTimeInterval        connectionTimeout; /* RB-12: default 60s */
   NSString              *urlKey;
   NSURL                 *url;
   NSURL                 *u;
@@ -395,6 +396,7 @@ debugWrite(GSHTTPURLHandle *handle, NSData *data)
       wProperties = NSCreateMapTable(writeKeyCallBacks,
 	NSObjectMapValueCallBacks, 8);
       request = [NSMutableDictionary new];
+      connectionTimeout = 60.0; /* RB-12: default connection timeout */
 
       ASSIGN(url, newUrl);
       ASSIGN(urlKey, [newUrl cacheKey]);
@@ -1100,6 +1102,12 @@ debugWrite(GSHTTPURLHandle *handle, NSData *data)
 
 - (void) endLoadInBackground
 {
+  /* RB-12: Cancel any pending connection timeout timer.
+   */
+  [NSObject cancelPreviousPerformRequestsWithTarget: self
+                                           selector: @selector(_timeout)
+                                             object: nil];
+
   DESTROY(wData);
   NSResetMapTable(wProperties);
 
@@ -1120,6 +1128,24 @@ debugWrite(GSHTTPURLHandle *handle, NSData *data)
     }
   connectionState = idle;
   [super endLoadInBackground];
+}
+
+/* RB-12: Called when the connection timeout fires.
+ */
+- (void) _timeout
+{
+  if (connectionState != idle)
+    {
+      if (debug)
+        {
+          NSLog(@"%@ %p connection timed out after %.0f seconds",
+            NSStringFromSelector(_cmd), self, connectionTimeout);
+        }
+      [self endLoadInBackground];
+      [self backgroundLoadDidFailWithReason:
+        [NSString stringWithFormat:
+          @"Connection timed out after %.0f seconds", connectionTimeout]];
+    }
 }
 
 
@@ -1914,6 +1940,14 @@ debugWrite(GSHTTPURLHandle *handle, NSData *data)
 		 name: GSFileHandleConnectCompletionNotification
 	       object: sock];
       connectionState = connecting;
+      /* RB-12: Schedule a connection timeout timer.
+       */
+      if (connectionTimeout > 0)
+        {
+          [self performSelector: @selector(_timeout)
+                     withObject: nil
+                     afterDelay: connectionTimeout];
+        }
       if (debug)
         {
           NSLog(@"%@ %p start connect to %@:%@",
