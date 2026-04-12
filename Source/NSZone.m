@@ -80,8 +80,10 @@
    tested them extensively in multithreaded cases. */
 
 
-/* Define to turn off NSAssertions. */
-#define NS_BLOCK_ASSERTIONS 1
+/* Only disable NSAssertions if explicitly requested externally. */
+#ifndef NS_BLOCK_ASSERTIONS
+/* assertions are active by default */
+#endif
 
 #define IN_NSZONE_M 1
 
@@ -628,6 +630,7 @@ fmalloc (NSZone *zone, size_t size)
           else
             [NSException raise: NSMallocException
                         format: @"Out of memory"];
+          return NULL; /* unreachable, but silences analyzer warnings */
         }
 
       NSAssert(chunkIsInUse(chunkhead), NSInternalInconsistencyException);
@@ -728,6 +731,7 @@ frealloc (NSZone *zone, void *ptr, size_t size)
               else
                 [NSException raise: NSMallocException
                             format: @"Out of memory"];
+              return NULL; /* unreachable, but silences analyzer warnings */
             }
           memcpy((void*)(&newchunk[1]), (void*)(&chunkhead[1]), realsize-FBSZ);
           add_buf(zptr, chunkhead);
@@ -819,11 +823,16 @@ frecycle (NSZone *zone)
   GS_MUTEX_UNLOCK(zoneLock);
 }
 
+/* RB-18: Hold zoneLock across both the free and the recycle check to
+ * prevent a race where another thread's rffree could interleave between
+ * ffree()'s unlock of the zone lock and frecycle1()'s re-acquisition,
+ * potentially causing use-after-free if the zone is destroyed mid-operation.
+ */
 static void
 rffree (NSZone *zone, void *ptr)
 {
-  ffree(zone, ptr);
   GS_MUTEX_LOCK(zoneLock);
+  ffree(zone, ptr);
   if (frecycle1(zone))
     destroy_zone(zone);
   GS_MUTEX_UNLOCK(zoneLock);

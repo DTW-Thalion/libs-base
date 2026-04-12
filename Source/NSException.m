@@ -702,6 +702,57 @@ recover(int sig)
   siglongjmp(jbuf()->buf, 1);
 }
 
+/*
+ * Mutex to serialize signal handler installation across threads,
+ * preventing races where one thread's handler overwrites another's.
+ */
+static gs_mutex_t signalHandlerLock = GS_MUTEX_INIT_STATIC;
+
+/*
+ * Thread-safe signal handler installation/restoration helpers.
+ * Use sigaction() where available for async-signal-safety,
+ * fall back to signal() on Windows.
+ */
+static inline void
+gs_install_recover_handlers(jbuf_type *env)
+{
+#if !defined(_WIN32)
+  struct sigaction sa;
+  struct sigaction old_segv, old_bus;
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = recover;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGSEGV, &sa, &old_segv);
+  sigaction(SIGBUS, &sa, &old_bus);
+  env->segv = old_segv.sa_handler;
+  env->bus = old_bus.sa_handler;
+#else
+  env->segv = signal(SIGSEGV, recover);
+  env->bus = signal(SIGBUS, recover);
+#endif
+}
+
+static inline void
+gs_restore_handlers(jbuf_type *env)
+{
+#if !defined(_WIN32)
+  struct sigaction sa;
+
+  memset(&sa, 0, sizeof(sa));
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sa.sa_handler = env->segv;
+  sigaction(SIGSEGV, &sa, NULL);
+  sa.sa_handler = env->bus;
+  sigaction(SIGBUS, &sa, NULL);
+#else
+  signal(SIGSEGV, env->segv);
+  signal(SIGBUS, env->bus);
+#endif
+}
+
 #ifdef	__clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wframe-address"
@@ -715,11 +766,11 @@ NSFrameAddress(NSUInteger offset)
 {
   jbuf_type     *env;
 
+  GS_MUTEX_LOCK(signalHandlerLock);
   env = jbuf();
   if (sigsetjmp(env->buf, 1) == 0)
     {
-      env->segv = signal(SIGSEGV, recover);
-      env->bus = signal(SIGBUS, recover);
+      gs_install_recover_handlers(env);
       switch (offset)
 	{
 	  _NS_FRAME_HACK(0); _NS_FRAME_HACK(1); _NS_FRAME_HACK(2);
@@ -758,16 +809,15 @@ NSFrameAddress(NSUInteger offset)
 	  _NS_FRAME_HACK(99);
 	  default: env->addr = NULL; break;
 	}
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
     }
   else
     {
       env = jbuf();
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
       env->addr = NULL;
     }
+  GS_MUTEX_UNLOCK(signalHandlerLock);
   return env->addr;
 }
 
@@ -775,11 +825,11 @@ NSUInteger NSCountFrames(void)
 {
   jbuf_type	*env;
 
+  GS_MUTEX_LOCK(signalHandlerLock);
   env = jbuf();
   if (sigsetjmp(env->buf, 1) == 0)
     {
-      env->segv = signal(SIGSEGV, recover);
-      env->bus = signal(SIGBUS, recover);
+      gs_install_recover_handlers(env);
       env->addr = 0;
 
 #define _NS_COUNT_HACK(X) if (__builtin_frame_address(X + 1) == 0) \
@@ -821,16 +871,15 @@ NSUInteger NSCountFrames(void)
       _NS_COUNT_HACK(99);
 
 done:
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
     }
   else
     {
       env = jbuf();
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
     }
 
+  GS_MUTEX_UNLOCK(signalHandlerLock);
   return (uintptr_t)env->addr;
 }
 
@@ -839,11 +888,11 @@ NSReturnAddress(NSUInteger offset)
 {
   jbuf_type	*env;
 
+  GS_MUTEX_LOCK(signalHandlerLock);
   env = jbuf();
   if (sigsetjmp(env->buf, 1) == 0)
     {
-      env->segv = signal(SIGSEGV, recover);
-      env->bus = signal(SIGBUS, recover);
+      gs_install_recover_handlers(env);
       switch (offset)
 	{
 	  _NS_RETURN_HACK(0); _NS_RETURN_HACK(1); _NS_RETURN_HACK(2);
@@ -882,17 +931,16 @@ NSReturnAddress(NSUInteger offset)
 	  _NS_RETURN_HACK(99);
 	  default: env->addr = NULL; break;
 	}
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
     }
   else
     {
       env = jbuf();
-      signal(SIGSEGV, env->segv);
-      signal(SIGBUS, env->bus);
+      gs_restore_handlers(env);
       env->addr = NULL;
     }
 
+  GS_MUTEX_UNLOCK(signalHandlerLock);
   return env->addr;
 }
 
@@ -1040,13 +1088,13 @@ GSPrivateReturnAddresses(NSUInteger **returns)
 
       *returns = (NSUInteger*)malloc(numReturns * sizeof(NSUInteger));
 
+      GS_MUTEX_LOCK(signalHandlerLock);
       env = jbuf();
       if (sigsetjmp(env->buf, 1) == 0)
         {
           unsigned      i;
 
-          env->segv = signal(SIGSEGV, recover);
-          env->bus = signal(SIGBUS, recover);
+          gs_install_recover_handlers(env);
 
           for (i = 0; i < n; i++)
             {
@@ -1094,15 +1142,14 @@ GSPrivateReturnAddresses(NSUInteger **returns)
                 }
               memcpy(&(*returns)[i], env->addr, sizeof(NSUInteger));
             }
-          signal(SIGSEGV, env->segv);
-          signal(SIGBUS, env->bus);
+          gs_restore_handlers(env);
         }
       else
         {
           env = jbuf();
-          signal(SIGSEGV, env->segv);
-          signal(SIGBUS, env->bus);
+          gs_restore_handlers(env);
         }
+      GS_MUTEX_UNLOCK(signalHandlerLock);
     }
 #endif
   return numReturns;
