@@ -292,17 +292,30 @@ next_arg(const char *typePtr, NSArgumentInfo *info, char *outTypes)
 	   *	Continue accumulating structure size
 	   *	and adjust alignment if necessary
 	   */
-	  while (*typePtr != _C_STRUCT_E)
-	    {
-	      typePtr = next_arg(typePtr, &local, 0);
-	      if (typePtr == 0)
-		{
-		  return 0;		/* error	*/
-		}
-	      acc_size = ROUND(acc_size, local.align);
-	      acc_size += local.size;
-	      acc_align = MAX(local.align, acc_align);
-	    }
+	  {
+	    unsigned int iterCount = 0;
+	    while (*typePtr != _C_STRUCT_E)
+	      {
+		/* RB-17: Guard against infinite loops on malformed type
+		 * encodings by checking forward progress and imposing
+		 * an iteration limit.
+		 */
+		const char *prev = typePtr;
+
+		typePtr = next_arg(typePtr, &local, 0);
+		if (typePtr == 0)
+		  {
+		    return 0;		/* error	*/
+		  }
+		if (typePtr <= prev || ++iterCount > 10000)
+		  {
+		    return 0;		/* malformed: no progress or too many fields */
+		  }
+		acc_size = ROUND(acc_size, local.align);
+		acc_size += local.size;
+		acc_align = MAX(local.align, acc_align);
+	      }
+	  }
 	  /*
 	   * Size must be a multiple of alignment
 	   */
@@ -527,7 +540,25 @@ next_arg(const char *typePtr, NSArgumentInfo *info, char *outTypes)
  * the types string.
  */
       blen = (strlen(t) + 1) * 16;	// Total buffer length
-      ret = alloca(blen);
+      /* RB-16: Cap alloca at 4096 bytes to prevent stack overflow on
+       * pathologically long type strings.  Use malloc for larger buffers.
+       */
+      {
+        BOOL usedMalloc = NO;
+        if (blen <= 4096)
+          {
+            ret = alloca(blen);
+          }
+        else
+          {
+            ret = malloc(blen);
+            if (ret == 0)
+              {
+                DESTROY(self);
+                return nil;
+              }
+            usedMalloc = YES;
+          }
       end = ret + blen;
 
       /* Copy the return type (including qualifiers) with ehough room
@@ -570,6 +601,11 @@ next_arg(const char *typePtr, NSArgumentInfo *info, char *outTypes)
       strncpy((char*)_methodTypes, ret, rlen);
       strncpy(((char*)_methodTypes) + rlen, args, alen);
       ((char*)_methodTypes)[alen + rlen] = '\0';
+      if (usedMalloc)
+        {
+          free(ret);
+        }
+      } /* end RB-16 usedMalloc scope */
     }
   return self;
 }

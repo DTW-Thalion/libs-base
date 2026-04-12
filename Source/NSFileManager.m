@@ -2907,9 +2907,23 @@ static inline void gsedRelease(GSEnumeratedDirectory X)
 
   while (GSIArrayCount(_stack) > 0)
     {
-      GSEnumeratedDirectory dir = GSIArrayLastItem(_stack).ext;
+      GSEnumeratedDirectory dir;
       struct _STATB	statbuf;
       const GSNativeChar *dirname = NULL;
+
+      /* RB-15: Guard against symlink loops or extremely deep directory
+       * trees that could exhaust the stack.  256 levels is far beyond
+       * any reasonable real-world directory nesting.
+       */
+      if (GSIArrayCount(_stack) > 256)
+        {
+          NSWarnFLog(@"Directory enumeration exceeded maximum depth of"
+            @" 256 at '%@' - skipping", _currentFilePath);
+          GSIArrayRemoveLastItem(_stack);
+          continue;
+        }
+
+      dir = GSIArrayLastItem(_stack).ext;
 
 #ifdef __ANDROID__
       if (dir.assetDir)
