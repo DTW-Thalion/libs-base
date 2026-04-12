@@ -165,7 +165,7 @@ static BOOL     verifyClient = NO;
  * default string.
  * A GSTLSVerify option set for a specific session overrides this default
  */
-static BOOL     verifyServer = NO;
+static BOOL     verifyServer = YES;
 
 /* The globalDebug variable turns on gnutls debug.  The hard-code value is
  * overridden by GS_TLS_DEBUG, which in turn can be overridden by the
@@ -2070,10 +2070,10 @@ retrieve_callback(gnutls_session_t session,
                 handle, gnutls_strerror(ret));
               NSLog(@"%p %@", handle, [self sessionInfo]);
             }
-          if (YES == shouldVerify)
-            {
-              [self disconnect: NO];
-            }
+          /* Always disconnect on verification failure rather than
+           * silently continuing with an unverified connection.
+           */
+          [self disconnect: NO];
         }
       else
         {
@@ -2514,7 +2514,19 @@ retrieve_callback(gnutls_session_t session,
   str = [opts objectForKey: GSTLSRemoteHosts];
   if (nil == str)
     {
-      names = nil;
+      /* When no explicit remote hosts list is configured, fall back to
+       * the connection hostname (GSTLSServerName) for verification so
+       * that hostname checking is not silently skipped.
+       */
+      NSString	*serverName = [opts objectForKey: GSTLSServerName];
+      if (nil != serverName && [serverName length] > 0)
+        {
+          names = [NSArray arrayWithObject: serverName];
+        }
+      else
+        {
+          names = nil;
+        }
     }
   else
     {
