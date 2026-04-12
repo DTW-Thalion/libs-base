@@ -220,6 +220,8 @@ pop_pool_from_cache(struct autorelease_thread_vars *tv)
 - (id) init
 {
   _released = objc_autoreleasePoolPush();
+  /* Record the creating thread for cross-thread drain detection. */
+  _creatingThread = (void*)GSCurrentThread();
   {
     struct autorelease_thread_vars *tv = ARP_THREAD_VARS;
     unsigned	level = 0;
@@ -321,6 +323,9 @@ pop_pool_from_cache(struct autorelease_thread_vars *tv)
     {
       _released = _released_head;
     }
+
+  /* Record the creating thread for cross-thread drain detection. */
+  _creatingThread = (void*)GSCurrentThread();
 
   /* Install ourselves as the current pool.
    * The only other place where the parent/child linked list is modified
@@ -591,6 +596,16 @@ pop_pool_from_cache(struct autorelease_thread_vars *tv)
     {
       [NSException raise: NSInternalInconsistencyException
                   format: @"NSAutoreleasePool -dealloc of deallocated pool"];
+    }
+
+  /* Detect cross-thread autorelease pool drain.  A pool must only be
+   * drained/deallocated on the same thread that created it.
+   */
+  if (_creatingThread != nil && (void*)GSCurrentThread() != _creatingThread)
+    {
+      [NSException raise: NSInternalInconsistencyException
+                  format: @"NSAutoreleasePool drained on a thread different "
+                          @"from the thread it was created on"];
     }
 
   [self emptyPool];

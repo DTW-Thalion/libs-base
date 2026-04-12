@@ -193,6 +193,8 @@ GS_EXPORT_CLASS NS_AUTOMATED_REFCOUNT_UNAVAILABLE
   unsigned _released_count;
   /* The method to add an object to this pool */
   void 	(*_addImp)(id, SEL, id);
+  /* The thread that created this pool, for cross-thread drain detection. */
+  void	*_creatingThread;
 #endif
 #if     GS_NONFRAGILE
 #else
