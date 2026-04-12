@@ -989,12 +989,10 @@ mainQueueExecuteOperation(void *context)
           [internal->lock lock];
           internal->executing--;
           [object removeObserver: self forKeyPath: @"isFinished"];
+          [internal->operations removeObjectIdenticalTo: object];
           [internal->lock unlock];
           [self willChangeValueForKey: @"operations"];
           [self willChangeValueForKey: @"operationCount"];
-          [internal->lock lock];
-          [internal->operations removeObjectIdenticalTo: object];
-          [internal->lock unlock];
           [self didChangeValueForKey: @"operationCount"];
           [self didChangeValueForKey: @"operations"];
         }
