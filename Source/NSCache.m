@@ -36,6 +36,8 @@
  * things that need to be associated with objects stored in an NSCache.  It is
  * an NSObject subclass so that it can be used with OpenStep collection
  * classes.
+ *
+ * Contains intrusive doubly-linked list pointers for O(1) LRU operations.
  */
 @interface _GSCachedObject : NSObject
 {
@@ -45,6 +47,8 @@
   int accessCount;
   NSUInteger cost;
   BOOL isEvictable;
+  _GSCachedObject *_lruNext;
+  _GSCachedObject *_lruPrev;
 }
 @end
 
@@ -52,6 +56,50 @@
 /** The method controlling eviction policy in an NSCache. */
 - (void) _evictObjectsToMakeSpaceForObjectWithCost: (NSUInteger)cost;
 @end
+
+/**
+ * Intrusive doubly-linked list providing O(1) LRU operations.
+ * Tail is most-recently-used, head is least-recently-used.
+ */
+typedef struct {
+  _GSCachedObject *head;
+  _GSCachedObject *tail;
+} _GSLRUList;
+
+static inline void _lruRemove(_GSLRUList *list, _GSCachedObject *obj)
+{
+  if (obj->_lruPrev)
+    obj->_lruPrev->_lruNext = obj->_lruNext;
+  else
+    list->head = obj->_lruNext;
+
+  if (obj->_lruNext)
+    obj->_lruNext->_lruPrev = obj->_lruPrev;
+  else
+    list->tail = obj->_lruPrev;
+
+  obj->_lruNext = nil;
+  obj->_lruPrev = nil;
+}
+
+static inline void _lruAppend(_GSLRUList *list, _GSCachedObject *obj)
+{
+  obj->_lruPrev = list->tail;
+  obj->_lruNext = nil;
+  if (list->tail)
+    list->tail->_lruNext = obj;
+  else
+    list->head = obj;
+  list->tail = obj;
+}
+
+static inline void _lruMoveToTail(_GSLRUList *list, _GSCachedObject *obj)
+{
+  if (obj == list->tail)
+    return;
+  _lruRemove(list, obj);
+  _lruAppend(list, obj);
+}
 
 @implementation NSCache
 - (id) init
@@ -61,7 +109,12 @@
       return nil;
     }
   ASSIGN(_objects, [NSMapTable strongToStrongObjectsMapTable]);
-  _accesses = [NSMutableArray new];
+  /* Repurpose _accesses to hold a heap-allocated _GSLRUList struct.
+   * We store it as an NSValue wrapping the pointer. */
+  {
+    _GSLRUList *lru = calloc(1, sizeof(_GSLRUList));
+    _accesses = (id)lru;
+  }
   _lock = [NSRecursiveLock new];
   return self;
 }
@@ -105,9 +158,8 @@
     }
   if (obj->isEvictable)
     {
-      // Move the object to the end of the access list.
-      [_accesses removeObjectIdenticalTo: obj];
-      [_accesses addObject: obj];
+      // O(1) move to most-recently-used position
+      _lruMoveToTail((_GSLRUList *)_accesses, obj);
     }
   obj->accessCount++;
   _totalAccesses++;
@@ -128,7 +180,11 @@
       [_delegate cache: self willEvictObject: obj->object];
     }
   [_objects removeAllObjects];
-  [_accesses removeAllObjects];
+  {
+    _GSLRUList *lru = (_GSLRUList *)_accesses;
+    lru->head = nil;
+    lru->tail = nil;
+  }
   _totalAccesses = 0;
   [_lock unlock];
 }
@@ -143,8 +199,11 @@
     {
       [_delegate cache: self willEvictObject: obj->object];
       _totalAccesses -= obj->accessCount;
+      if (obj->isEvictable)
+        {
+          _lruRemove((_GSLRUList *)_accesses, obj);
+        }
       [_objects removeObjectForKey: key];
-      [_accesses removeObjectIdenticalTo: obj];
     }
   [_lock unlock];
 }
@@ -188,11 +247,9 @@
   newObject->object = RETAIN(obj);
   newObject->key = RETAIN(key);
   newObject->cost = num;
-  if ([obj conformsToProtocol: @protocol(NSDiscardableContent)])
-    {
-      newObject->isEvictable = YES;
-      [_accesses addObject: newObject];
-    }
+  // All objects participate in LRU eviction, not just NSDiscardableContent
+  newObject->isEvictable = YES;
+  _lruAppend((_GSLRUList *)_accesses, newObject);
   [_objects setObject: newObject forKey: key];
   RELEASE(newObject);
   _totalCost += num;
@@ -215,11 +272,10 @@
 }
 
 /**
- * This method is the one that handles the eviction policy.  This
- * implementation uses a relatively simple LRU/LFU hybrid.  The NSCache
- * documentation from Apple makes it clear that the policy may change, so we
- * could in future have a class cluster with pluggable policies for different
- * caches or some other mechanism.
+ * This method handles the eviction policy.  Objects are evicted from the
+ * LRU head (least recently used) first.  NSDiscardableContent objects have
+ * their content discarded; all other objects are removed directly when
+ * eviction is needed.
  */
 - (void) _evictObjectsToMakeSpaceForObjectWithCost: (NSUInteger)cost
 {
@@ -236,56 +292,68 @@
   // Only evict if we need the space.
   if (count > 0 && (spaceNeeded > 0 || count >= _countLimit))
     {
-      NSMutableArray *evictedKeys = nil;
-      // Round up slightly.
+      _GSLRUList *lru = (_GSLRUList *)_accesses;
+      _GSCachedObject *obj = lru->head;
       NSUInteger averageAccesses = ((_totalAccesses / (double)count) * 0.2) + 1;
-      NSEnumerator *e = [_accesses objectEnumerator];
-      _GSCachedObject *obj;
+      NSMutableArray *evictedKeys = [[NSMutableArray alloc] init];
 
-      if (_evictsObjectsWithDiscardedContent)
+      while (nil != obj)
 	{
-	  evictedKeys = [[NSMutableArray alloc] init];
-	}
-      while (nil != (obj = [e nextObject]))
-	{
+	  _GSCachedObject *next = obj->_lruNext;
+
 	  // Don't evict frequently accessed objects.
-	  if (obj->accessCount < averageAccesses && obj->isEvictable)
+	  if (obj->accessCount < averageAccesses)
 	    {
-	      [obj->object discardContentIfPossible];
-	      if ([obj->object isContentDiscarded])
-		{
-		  NSUInteger cost = obj->cost;
-
-		  // Evicted objects have no cost.
-		  obj->cost = 0;
-		  // Don't try evicting this again in future; it's gone already.
-		  obj->isEvictable = NO;
-		  // Remove this object as well as its contents if required
-		  if (_evictsObjectsWithDiscardedContent)
+	      if ([obj->object conformsToProtocol: @protocol(NSDiscardableContent)])
+	        {
+	          [obj->object discardContentIfPossible];
+	          if ([obj->object isContentDiscarded])
 		    {
 		      [evictedKeys addObject: obj->key];
+		      _totalCost -= obj->cost;
+		      obj->cost = 0;
+		      obj->isEvictable = NO;
+		      if (obj->cost > spaceNeeded)
+		        {
+		          spaceNeeded = 0;
+		        }
+		      else
+		        {
+		          spaceNeeded -= obj->cost;
+		        }
 		    }
-		  _totalCost -= cost;
-		  // If we've freed enough space, give up
-		  if (cost > spaceNeeded)
-		    {
-		      break;
-		    }
-		  spaceNeeded -= cost;
-		}
+	        }
+	      else
+	        {
+	          // Evict non-discardable objects directly
+	          [evictedKeys addObject: obj->key];
+	          if (obj->cost >= spaceNeeded)
+	            {
+	              spaceNeeded = 0;
+	            }
+	          else
+	            {
+	              spaceNeeded -= obj->cost;
+	            }
+	        }
 	    }
-	}
-      // Evict all of the objects whose content we have discarded if required
-      if (_evictsObjectsWithDiscardedContent)
-	{
-	  NSString *key;
 
-	  e = [evictedKeys objectEnumerator];
-	  while (nil != (key = [e nextObject]))
+	  // If we've freed enough space, stop
+	  if (spaceNeeded == 0 && count - [evictedKeys count] < _countLimit)
 	    {
-	      [self removeObjectForKey: key];
+	      break;
 	    }
+	  obj = next;
 	}
+      // Remove all evicted objects
+      {
+	NSString *key;
+	NSEnumerator *e = [evictedKeys objectEnumerator];
+	while (nil != (key = [e nextObject]))
+	  {
+	    [self removeObjectForKey: key];
+	  }
+      }
       RELEASE(evictedKeys);
     }
   [_lock unlock];
@@ -296,7 +364,7 @@
   RELEASE(_lock);
   RELEASE(_name);
   RELEASE(_objects);
-  RELEASE(_accesses);
+  free((_GSLRUList *)_accesses);
   DEALLOC
 }
 @end
