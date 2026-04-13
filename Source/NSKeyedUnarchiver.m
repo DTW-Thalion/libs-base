@@ -455,8 +455,9 @@ static NSMapTable	*globalClassMap = 0;
         {
           *error = [NSError errorWithDomain: @"NSCocoaErrorDomain"
                                        code: 4864
-                                   userInfo: @{NSLocalizedDescriptionKey:
-                                     [localException reason]}];
+                                   userInfo: [NSDictionary dictionaryWithObject:
+                                     [localException reason]
+                                     forKey: NSLocalizedDescriptionKey]];
         }
     }
   NS_ENDHANDLER
