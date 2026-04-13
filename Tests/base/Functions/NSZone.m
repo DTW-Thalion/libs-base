@@ -36,15 +36,16 @@ int main()
 	[[localException name] UTF8String]); 
       NS_ENDHANDLER
       
-      NS_DURING
-	NSZoneFree(aZone,vp);
-	PASS(0, "NSZoneFree() free'd buffer throws exception"); 
-      NS_HANDLER
-	PASS(1, "NSZoneFree() free'd buffer throws exception: %s",
-	  [[localException name] UTF8String]); 
-      NS_ENDHANDLER
+      /* Historically NSZone ran its own segregated-fit allocator that
+       * tracked every live allocation and raised an exception on
+       * double-free. Since the allocator was replaced with a malloc shim
+       * (matching Apple's NSZone, which has been a shim for years), a
+       * double-free is now undefined behavior at the libc level —
+       * glibc's free() detects it and aborts the process. We can't
+       * exercise that from a test without killing the test runner, so
+       * this assertion is retired. */
 
-      
+
       vp = NSZoneMalloc(aZone,2000);
       memset(vp,2,2000);
 
