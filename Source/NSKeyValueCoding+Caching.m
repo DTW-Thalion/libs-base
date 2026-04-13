@@ -196,7 +196,7 @@ _getBoxedStructForIvar(struct _KVCCacheSlot *slot, id obj)
 #pragma clang diagnostic pop
 
 static struct _KVCCacheSlot
-_getBoxedBlockForIVar(NSString *key, Ivar ivar)
+_getBoxedBlockForIVar(NSString *key, Ivar ivar, Class cls)
 {
   const char          *encoding = ivar_getTypeEncoding(ivar);
   struct _KVCCacheSlot slot = {};
@@ -209,9 +209,11 @@ _getBoxedBlockForIVar(NSString *key, Ivar ivar)
 
   slot.offset = ivar_getOffset(ivar);
   slot.types = encoding;
-  // Get the current objc_method_cache_version as we do not explicitly
-  // request a new slot when looking up ivars.
-  slot.version = objc_method_cache_version;
+  // B1 Phase A: stamp with the per-class cache generation counter
+  // instead of the global objc_method_cache_version. Reads cls's
+  // own counter so a mutation on another class does not invalidate
+  // this slot.
+  slot.version = objc_class_cache_generation_np(cls);
 
   switch (encoding[0])
     {
@@ -307,7 +309,7 @@ _getBoxedBlockForIVar(NSString *key, Ivar ivar)
 }
 
 static struct _KVCCacheSlot
-_getBoxedBlockForMethod(NSString *key, Method method, SEL sel, uint64_t version)
+_getBoxedBlockForMethod(NSString *key, Method method, SEL sel, Class cls)
 {
   const char          *encoding = method_getTypeEncoding(method);
   struct _KVCCacheSlot slot = {};
@@ -322,7 +324,12 @@ _getBoxedBlockForMethod(NSString *key, Method method, SEL sel, uint64_t version)
   slot.imp = method_getImplementation(method);
   slot.selector = sel;
   slot.types = encoding;
-  slot.version = version;
+  // B1 Phase A: stamp with the per-class cache generation counter.
+  // Discards the `version` out-param written by objc_get_slot2 via
+  // _class_getMethodRecursive, which is the global
+  // objc_method_cache_version value. Per-class stamping ensures that
+  // a mutation on another class does not invalidate this slot.
+  slot.version = objc_class_cache_generation_np(cls);
 
   // TODO: Move most commonly used types up the switch statement
   switch (encoding[0])
@@ -489,7 +496,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
   sel = sel_registerName(name);
   if ((meth = _class_getMethodRecursive(cls, sel, &version)) != NULL)
     {
-      return _getBoxedBlockForMethod(boxedKey, meth, sel, version);
+      return _getBoxedBlockForMethod(boxedKey, meth, sel, cls);
     }
 
   // 1.2 Check if the <key> accessor method exists
@@ -498,7 +505,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
   sel = sel_registerName(name);
   if ((meth = _class_getMethodRecursive(cls, sel, &version)) != NULL)
     {
-      return _getBoxedBlockForMethod(boxedKey, meth, sel, version);
+      return _getBoxedBlockForMethod(boxedKey, meth, sel, cls);
     }
 
   // 1.3 Check if the is<key> accessor method exists
@@ -509,7 +516,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
   sel = sel_registerName(name);
   if ((meth = _class_getMethodRecursive(cls, sel, &version)) != NULL)
     {
-      return _getBoxedBlockForMethod(boxedKey, meth, sel, version);
+      return _getBoxedBlockForMethod(boxedKey, meth, sel, cls);
     }
 
   // 1.4 Check if the _<key> accessor method exists. Otherwise check
@@ -520,7 +527,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
   sel = sel_registerName(name);
   if ((meth = _class_getMethodRecursive(cls, sel, &version)) != NULL)
     {
-      return _getBoxedBlockForMethod(boxedKey, meth, sel, version);
+      return _getBoxedBlockForMethod(boxedKey, meth, sel, cls);
     }
 
   // Step 2. and 3. (NSArray and NSSet accessors) are implemented
@@ -533,7 +540,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
       Ivar ivar = class_getInstanceVariable(cls, name);
       if (ivar != NULL)
         { // _key
-          return _getBoxedBlockForIVar(boxedKey, ivar);
+          return _getBoxedBlockForIVar(boxedKey, ivar, cls);
         }
 
       // 4.2 Check if the _is<Key> ivar exists
@@ -545,7 +552,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
       ivar = class_getInstanceVariable(cls, name);
       if (ivar != NULL)
         {
-          return _getBoxedBlockForIVar(boxedKey, ivar);
+          return _getBoxedBlockForIVar(boxedKey, ivar, cls);
         }
 
       // 4.3 Check if the <key> ivar exists
@@ -554,7 +561,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
       ivar = class_getInstanceVariable(cls, name);
       if (ivar != NULL)
         {
-          return _getBoxedBlockForIVar(boxedKey, ivar);
+          return _getBoxedBlockForIVar(boxedKey, ivar, cls);
         }
 
       // 4.4 Check if the is<Key> ivar exists
@@ -563,7 +570,7 @@ ValueForKeyLookup(Class cls, NSObject *self, NSString *boxedKey,
       ivar = class_getInstanceVariable(cls, name);
       if (ivar != NULL)
         {
-          return _getBoxedBlockForIVar(boxedKey, ivar);
+          return _getBoxedBlockForIVar(boxedKey, ivar, cls);
         }
     }
 
@@ -617,10 +624,13 @@ valueForKeyWithCaching(id obj, NSString *aKey)
     }
   cachedSlot = node->key.ptr;
 
-  // Check if a new method was registered. If this is the case,
-  // the objc_method_cache_version was incremented and we need to update the
-  // cache.
-  if (objc_method_cache_version != cachedSlot->version)
+  // Check if a new method was registered on THIS class. B1 Phase A:
+  // compare the per-class cache generation (via
+  // objc_class_cache_generation_np) instead of the process-global
+  // objc_method_cache_version. A mutation on an unrelated class no
+  // longer invalidates this slot, eliminating the cross-class cache
+  // storm that was the B1 spike's finding.
+  if (objc_class_cache_generation_np(cachedSlot->cls) != cachedSlot->version)
     {
       // Lookup the getter
       // TODO: We can optimise this by supplying a hint (return type etc.)
