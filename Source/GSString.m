@@ -1121,7 +1121,42 @@ tsbytes(uintptr_t s, char *buf)
 
 + (void) load
 {
-  useTinyStrings = objc_registerSmallObjectClass_np(self, TINY_STRING_MASK);
+  /* GSTinyString is registered but factory construction is disabled
+   * following the profile-off vs profile-on measurement in
+   * gnustep-audit/docs/spikes/2026-04-13-tagged-pointer-nsstring-addendum.md.
+   *
+   * Rationale: on the audit's benchmark suite the tagged-pointer
+   * small-string feature is a net performance loss. It introduces a
+   * 3.85x slowdown on GSTinyString -hash vs the ivar-cached GSString
+   * -hash path (2.0 ns -> 7.7 ns, reproduced with zero run-to-run
+   * spread), and delivers only a single measurable win on
+   * autorelease_10_obj (-6%, -28 ns). Hash-heavy workloads that
+   * repeatedly hash the same string — literal NSDictionary keys at
+   * startup, KVC keys, selector-name lookups — pay the 5.7 ns cost
+   * on every call because tagged pointers have no backing memory in
+   * which to cache the computed hash.
+   *
+   * We keep the objc_registerSmallObjectClass_np call so that any
+   * direct +[GSTinyString alloc] call site (unlikely but possible
+   * via class-cluster dispatch) still returns a valid tagged
+   * pointer whose messages the runtime can dispatch. We force
+   * useTinyStrings = NO so that every factory path that would
+   * otherwise construct a tiny string falls through to the heap
+   * GSCInlineString / GSCString path instead.
+   *
+   * This leaves the GSTinyString class definition, hash, -length,
+   * and boundary-correctness tests in place so that re-enabling the
+   * feature is a one-line revert if future measurement (e.g., an
+   * extended benchmark suite that covers short-string construction
+   * throughput, allocator pressure, or isEqual-via-identity) shows
+   * tinies are a net win on a broader workload.
+   *
+   * See the B2 spike
+   * (gnustep-audit/docs/spikes/2026-04-13-tagged-pointer-nsstring.md)
+   * and the profile measurement addendum for the full analysis.
+   */
+  (void)objc_registerSmallObjectClass_np(self, TINY_STRING_MASK);
+  useTinyStrings = NO;
 #ifdef GS_PROFILE_TINY_STRINGS
   atexit(logTinyStringCount);
 #endif
