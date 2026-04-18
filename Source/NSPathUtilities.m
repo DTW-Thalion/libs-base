@@ -1927,10 +1927,12 @@ NSFullUserName(void)
 	{
 	  NSCharacterSet	*s = [NSCharacterSet punctuationCharacterSet];
 
-	  while ([s characterIsMember: [userName characterAtIndex: length - 1]])
+	  while (length > 0
+	    && [s characterIsMember: [userName characterAtIndex: length - 1]])
 	    {
 	      userName = [userName substringToIndex: --length];
 	      userName = [userName stringByTrimmingSpaces];
+	      length = [userName length];
 	    }
 	}
       ASSIGN(theFullUserName, userName);
