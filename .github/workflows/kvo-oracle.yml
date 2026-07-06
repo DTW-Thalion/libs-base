@@ -1,0 +1,32 @@
+name: kvo-thread-oracle
+on:
+  push:
+    branches: [scratch/kvo-thread-oracle]
+  workflow_dispatch:
+
+jobs:
+  macos-oracle:
+    name: Concurrent KVO behavior on Apple Foundation
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the oracle against Apple Foundation
+        run: |
+          clang --version
+          clang -fobjc-arc -framework Foundation \
+            Tests/oracle/kvo_thread_oracle.m -o oracle
+      - name: Run each scenario in isolation (crash in one must not hide others)
+        run: |
+          run_one () {
+            ./oracle "$1" & pid=$!
+            ( sleep 150; kill -9 $pid 2>/dev/null ) & watch=$!
+            wait $pid; rc=$?
+            kill $watch 2>/dev/null
+            return $rc
+          }
+          for s in 1 2 3 4; do
+            echo "################ Apple scenario $s ################"
+            run_one "$s" || echo "  process-exit=$? (nonzero => crash/abort, not a caught exception)"
+            echo ""
+          done
