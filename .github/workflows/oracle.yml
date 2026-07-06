@@ -1,0 +1,16 @@
+name: securecoding-oracle
+on:
+  push:
+    branches: [scratch/securecoding-oracle]
+  workflow_dispatch:
+
+jobs:
+  macos-oracle:
+    name: NSSecureCoding behavior on Apple Foundation
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run the oracle against Apple Foundation
+        run: |
+          clang -fobjc-arc -framework Foundation Tests/oracle/securecoding_oracle.m -o oracle
+          ./oracle 2>&1
