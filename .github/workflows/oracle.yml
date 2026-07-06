@@ -14,3 +14,7 @@ jobs:
         run: |
           clang -fobjc-arc -framework Foundation Tests/oracle/securecoding_oracle.m -o oracle
           ./oracle 2>&1
+      - name: NSCalendar rangeOfUnit behavior on Apple Foundation
+        run: |
+          clang -fobjc-arc -framework Foundation Tests/oracle/calendar_oracle.m -o caloracle
+          ./caloracle 2>&1
