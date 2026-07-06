@@ -1,105 +1,97 @@
-/* NSSecureCoding behavior oracle. Compile against Apple Foundation on macOS:
- *   clang -framework Foundation securecoding_oracle.m -o oracle && ./oracle
- * Also compiles/runs under GNUstep for A/B comparison. Prints Apple's actual
- * behavior for each ambiguous secure-coding scenario so the GNUstep
- * implementation can match it exactly.
+/* NSSecureCoding behavior oracle (v2 — custom classes are where the real
+ * enforcement lives; plist substrate classes turned out to be implicitly
+ * allowed regardless of the class list). Apple Foundation on macOS:
+ *   clang -fobjc-arc -framework Foundation securecoding_oracle.m -o oracle && ./oracle
  */
 #import <Foundation/Foundation.h>
 
-static const char *R(id obj, NSError *err)
-{
-  static char buf[512];
-  snprintf(buf, sizeof(buf), "obj=%s  err=%s",
-    obj ? [[obj description] UTF8String] : "(nil)",
-    err ? [[NSString stringWithFormat: @"%@ / %@",
-             [err domain], [[err userInfo] objectForKey: NSLocalizedDescriptionKey]] UTF8String]
-        : "(nil)");
-  return buf;
-}
+/* A custom class that conforms to NSSecureCoding. */
+@interface Widget : NSObject <NSSecureCoding>
+@property (nonatomic, copy) NSString *name;
+@end
+@implementation Widget
++ (BOOL) supportsSecureCoding { return YES; }
+- (void) encodeWithCoder: (NSCoder *)c { [c encodeObject: _name forKey: @"name"]; }
+- (instancetype) initWithCoder: (NSCoder *)c
+{ if ((self = [super init])) { _name = [c decodeObjectOfClass: [NSString class] forKey: @"name"]; } return self; }
+- (NSString *) description { return [NSString stringWithFormat: @"<Widget:%@>", _name]; }
+@end
 
-/* Archive helper (secure). */
-static NSData *arch(id root)
-{
-  NSError *e = nil;
-  NSData *d = [NSKeyedArchiver archivedDataWithRootObject: root
-                                  requiringSecureCoding: YES error: &e];
-  if (!d) NSLog(@"ARCHIVE FAILED: %@", e);
-  return d;
-}
+/* A custom class that does NOT conform to NSSecureCoding (plain NSCoding). */
+@interface Sneaky : NSObject <NSCoding>
+@end
+@implementation Sneaky
+- (void) encodeWithCoder: (NSCoder *)c {}
+- (instancetype) initWithCoder: (NSCoder *)c { return [super init]; }
+- (NSString *) description { return @"<Sneaky>"; }
+@end
 
-#define SCEN(n, desc) NSLog(@"\n[%d] %s", n, desc)
+static NSString *S1(id o) { return o ? [[o description] stringByReplacingOccurrencesOfString: @"\n" withString: @" "] : @"(nil)"; }
+static const char *R(id o, NSError *e)
+{
+  static char b[600];
+  snprintf(b, sizeof(b), "obj=%s | err=%s", [S1(o) UTF8String],
+    e ? [[NSString stringWithFormat: @"%@ code=%ld: %@", [e domain], (long)[e code],
+          [[e userInfo] objectForKey: NSLocalizedDescriptionKey]] UTF8String] : "(nil)");
+  return b;
+}
+static NSData *archS(id root, BOOL secure)
+{ NSError *e=nil; NSData *d=[NSKeyedArchiver archivedDataWithRootObject: root requiringSecureCoding: secure error: &e];
+  if(!d) NSLog(@"  ARCHIVE FAILED: %@", e); return d; }
+#define SET(...) [NSSet setWithObjects: __VA_ARGS__, nil]
+#define SCEN(n, d) NSLog(@"[%d] %s", n, d)
 
 int main(void)
 {
   @autoreleasepool
   {
-    NSError *err;
-    id out;
+    NSError *err; id out;
+    Widget *w = [Widget new]; w.name = @"secret";
+    NSData *widgetData = archS(w, YES);
+    NSData *arrWidget  = archS(@[w], YES);               /* array containing a Widget */
+    NSData *sneakyData = archS([Sneaky new], NO);        /* non-secure archive */
 
-    NSData *strData  = arch(@"secret-string");
-    NSData *numData  = arch(@(42));
-    NSData *arrData  = arch((@[@"a", @"b", @(3)]));      /* strings + a number */
-    NSData *dictData = arch((@{@"k": @"v", @(1): @(2)}));
+    SCEN(1, "Widget archive, decode {Widget}  (match)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([Widget class]) fromData: widgetData error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(1, "unarchivedObjectOfClasses:{NSNumber} on an NSString  (mismatch)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSNumber class]] fromData: strData error: &err];
-    NSLog(@"    -> %s", R(out, err));
+    SCEN(2, "Widget archive, decode {NSString}  (custom class NOT listed)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([NSString class]) fromData: widgetData error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(2, "unarchivedObjectOfClasses:{NSString} on an NSString  (match)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSString class]] fromData: strData error: &err];
-    NSLog(@"    -> %s", R(out, err));
+    SCEN(3, "Widget archive, decode {} EMPTY");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet set] fromData: widgetData error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(3, "unarchivedObjectOfClasses:{NSString} on an NSMutableString subclass instance");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSString class]] fromData: arch([@"hi" mutableCopy]) error: &err];
-    NSLog(@"    -> %s  (does a subclass of an allowed class pass?)", R(out, err));
+    SCEN(4, "array[Widget], decode {NSArray} ONLY  (Widget not listed - does propagation catch it?)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([NSArray class]) fromData: arrWidget error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(4, "unarchivedObjectOfClasses:{NSObject} on an NSString  (NSObject does NOT conform to NSSecureCoding)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSObject class]] fromData: strData error: &err];
-    NSLog(@"    -> %s", R(out, err));
+    SCEN(5, "array[Widget], decode {NSArray, Widget}  (both listed)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([NSArray class],[Widget class]) fromData: arrWidget error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(5, "unarchivedObjectOfClasses:{NSArray} on an NSArray of strings+number  (elements NOT listed)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSArray class]] fromData: arrData error: &err];
-    NSLog(@"    -> %s  (are element classes implicitly allowed, or must be listed?)", R(out, err));
+    SCEN(6, "array[Widget], decode {Widget} ONLY  (NSArray not listed - is the container implicitly allowed?)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([Widget class]) fromData: arrWidget error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(6, "unarchivedObjectOfClasses:{NSArray,NSString,NSNumber} on the same array  (all listed)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObjects: [NSArray class], [NSString class], [NSNumber class], nil] fromData: arrData error: &err];
-    NSLog(@"    -> %s", R(out, err));
+    SCEN(7, "Sneaky (non-NSSecureCoding), decode {Sneaky}  (listed but doesn't conform)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([Sneaky class]) fromData: sneakyData error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(7, "unarchivedObjectOfClasses:{} (EMPTY set) on an NSString");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet set] fromData: strData error: &err];
-    NSLog(@"    -> %s  (does empty set imply plist classes, or reject everything?)", R(out, err));
+    SCEN(8, "Widget archive, requiresSecureCoding=YES + bare decodeObjectForKey: (no class list)");
+    @try { NSKeyedUnarchiver *u=[[NSKeyedUnarchiver alloc] initForReadingFromData: widgetData error: &err];
+      u.requiresSecureCoding=YES; id r=[u decodeObjectForKey: @"root"];
+      NSLog(@"    -> returned %s (no raise)", [S1(r) UTF8String]); }
+    @catch(NSException *ex){ NSLog(@"    -> RAISED %s: %s", [[ex name] UTF8String], [[ex reason] UTF8String]); }
 
-    SCEN(8, "unarchivedObjectOfClasses:{NSNumber} on an NSNumber  (plist primitive, match)");
-    err = nil; out = [NSKeyedUnarchiver unarchivedObjectOfClasses: [NSSet setWithObject: [NSNumber class]] fromData: numData error: &err];
-    NSLog(@"    -> %s", R(out, err));
+    SCEN(9, "Widget archive, decode {Widget} via unarchivedArrayOfObjectsOfClasses (root is not an array)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedArrayOfObjectsOfClasses: SET([Widget class]) fromData: widgetData error: &err];
+    NSLog(@"    -> %s", R(out,err));
 
-    SCEN(9, "unarchivedArrayOfObjectsOfClasses:{NSString} on an NSArray of strings+number");
-    err = nil; out = [NSKeyedUnarchiver unarchivedArrayOfObjectsOfClasses: [NSSet setWithObject: [NSString class]] fromData: arrData error: &err];
-    NSLog(@"    -> %s  (NSArray implicit? number element not listed)", R(out, err));
-
-    SCEN(10, "unarchivedDictionaryWithKeysOfClasses:{NSString} objectsOfClasses:{NSString} on {str:str, num:num}");
-    err = nil; out = [NSKeyedUnarchiver unarchivedDictionaryWithKeysOfClasses: [NSSet setWithObject: [NSString class]] objectsOfClasses: [NSSet setWithObject: [NSString class]] fromData: dictData error: &err];
-    NSLog(@"    -> %s", R(out, err));
-
-    SCEN(11, "requiresSecureCoding=YES then bare decodeObjectForKey: (no class list)");
-    @try {
-      NSKeyedUnarchiver *u = [[NSKeyedUnarchiver alloc] initForReadingFromData: strData error: &err];
-      u.requiresSecureCoding = YES;
-      id r = [u decodeObjectForKey: @"root"];
-      NSLog(@"    -> returned %s (no raise)", r ? [[r description] UTF8String] : "(nil)");
-    } @catch (NSException *ex) {
-      NSLog(@"    -> RAISED %s: %s", [[ex name] UTF8String], [[ex reason] UTF8String]);
-    }
-
-    SCEN(12, "decodeObjectOfClasses:{NSNumber}forKey: (instance API) on an NSString value");
-    @try {
-      NSKeyedUnarchiver *u = [[NSKeyedUnarchiver alloc] initForReadingFromData: strData error: &err];
-      u.requiresSecureCoding = YES;
-      id r = [u decodeObjectOfClasses: [NSSet setWithObject: [NSNumber class]] forKey: @"root"];
-      NSLog(@"    -> returned %s (no raise)", r ? [[r description] UTF8String] : "(nil)");
-    } @catch (NSException *ex) {
-      NSLog(@"    -> RAISED %s: %s", [[ex name] UTF8String], [[ex reason] UTF8String]);
-    }
+    SCEN(10, "plist recap: {NSNumber} on an NSString  (implicit-allow confirmation)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([NSNumber class]) fromData: archS(@"hi", YES) error: &err];
+    NSLog(@"    -> %s", R(out,err));
   }
   return 0;
 }
