@@ -33,6 +33,15 @@ int main(void)
             printf("%-12s in %-12s -> {loc=%lu, len=%lu}\n",
               U[i].n, U[j].n, (unsigned long)r.location, (unsigned long)r.length);
         }
+
+    printf("\n=== rangeOfUnit:startDate:interval:forDate: 2015-02-15 12:30:45 ===\n");
+    for (i = 0; i < N; i++)
+      {
+        NSDate *start = nil; NSTimeInterval len = 0;
+        BOOL ok = [gCal rangeOfUnit: U[i].u startDate: &start interval: &len forDate: D];
+        printf("%-12s -> ok=%d start=%s len=%.0fs\n", U[i].n, ok,
+          start ? [[start description] UTF8String] : "(nil)", len);
+      }
   }
   return 0;
 }
