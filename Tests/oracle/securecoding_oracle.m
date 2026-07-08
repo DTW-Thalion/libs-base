@@ -92,6 +92,14 @@ int main(void)
     SCEN(10, "plist recap: {NSNumber} on an NSString  (implicit-allow confirmation)");
     err=nil; out=[NSKeyedUnarchiver unarchivedObjectOfClasses: SET([NSNumber class]) fromData: archS(@"hi", YES) error: &err];
     NSLog(@"    -> %s", R(out,err));
+
+    SCEN(11, "array[Widget] via unarchivedArrayOfObjectsOfClasses:{Widget}  (dedicated array entry point auto-permits NSArray)");
+    err=nil; out=[NSKeyedUnarchiver unarchivedArrayOfObjectsOfClasses: SET([Widget class]) fromData: arrWidget error: &err];
+    NSLog(@"    -> %s", R(out,err));
+
+    SCEN(12, "dict{k:Widget} via unarchivedDictionaryWithKeysOfClasses:{NSString} objectsOfClasses:{Widget}");
+    err=nil; out=[NSKeyedUnarchiver unarchivedDictionaryWithKeysOfClasses: SET([NSString class]) objectsOfClasses: SET([Widget class]) fromData: archS(@{@"k": w}, YES) error: &err];
+    NSLog(@"    -> %s", R(out,err));
   }
   return 0;
 }
