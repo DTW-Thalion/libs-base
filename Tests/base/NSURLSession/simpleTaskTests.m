@@ -914,11 +914,16 @@ main(int argc, char *argv[])
                     format:@"failed to load HTTPServer.bundle"];
       }
 
+    fprintf(stderr, "PROBE 1: bundle loaded\n"); fflush(stderr);
     httpServerClass = [bundle principalClass];
     routeClass = [bundle classNamed:@"Route"];
+    fprintf(stderr, "PROBE 2: classes resolved server=%p route=%p\n",
+      (void *)httpServerClass, (void *)routeClass); fflush(stderr);
 
     /* Bind to dynamic port. Set routes after initialisation. */
     server = [[httpServerClass alloc] initWithPort:0 routes:nil];
+    fprintf(stderr, "PROBE 3: server init returned %p\n", (void *)server);
+    fflush(stderr);
     if (!server)
       {
         [NSException raise:NSInternalInconsistencyException
@@ -931,11 +936,15 @@ main(int argc, char *argv[])
 
     NSLog(@"Test Server: baseURL=%@", baseURL);
 
+    fprintf(stderr, "PROBE 4: got port, baseURL set\n"); fflush(stderr);
     [server setRoutes:createRoutes(routeClass, baseURL)];
+    fprintf(stderr, "PROBE 5: routes set\n"); fflush(stderr);
     [server resume];
+    fprintf(stderr, "PROBE 6: server resumed, starting tests\n"); fflush(stderr);
 
     // Call Test Functions here
     testSimpleDownloadTransfer(baseURL);
+    fprintf(stderr, "PROBE 7: first test returned\n"); fflush(stderr);
     testDownloadTransferWithBlock(baseURL);
 
     testParallelDataTransfer(baseURL);
