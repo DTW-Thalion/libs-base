@@ -1,0 +1,30 @@
+name: macos-kvo-array
+on:
+  push:
+    branches: [scratch/kvo-array-oracle]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Key value observing through an array
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile against Foundation
+        run: |
+          sw_vers
+          clang --version
+          clang -framework Foundation \
+            Tests/macos/kvoarray_probe.m -o probe
+
+      - name: Run each case in its own process
+        run: |
+          for m in 1-direct-on-array 2-through-dictionary 3-plain-array-property \
+                   4-ordered-to-many 5-operator-count 6-direct-on-set 7-nested-deeper; do
+            echo "################ $m"
+            ./probe "$m" || echo "  process-exit=$?"
+            echo ""
+          done
