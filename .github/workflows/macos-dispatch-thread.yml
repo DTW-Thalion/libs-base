@@ -1,0 +1,35 @@
+name: macos-dispatch-thread
+on:
+  push:
+    branches: [scratch/dispatch-thread-cleanup]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: NSThread cleanup on dispatch worker threads
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile against Foundation
+        run: |
+          clang --version
+          clang -framework Foundation \
+            Tests/macos/dispatch_thread_probe.m -o probe
+
+      - name: Run each mode in its own process
+        run: |
+          run_one () {
+            ./probe "$1" "$2" & pid=$!
+            ( sleep 300; kill -9 $pid 2>/dev/null ) & watch=$!
+            wait $pid; rc=$?
+            kill $watch 2>/dev/null
+            return $rc
+          }
+          for m in reuse many; do
+            echo "################ $m ################"
+            run_one "$m" 90 || echo "  process-exit=$?"
+            echo ""
+          done
