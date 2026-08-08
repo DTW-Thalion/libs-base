@@ -30,18 +30,28 @@ TFH=$(find "$GS_PREFIX/gnustep" -name Testing.h -path '*TestFramework*' 2>/dev/n
 TF=$(dirname "$TFH")
 [ -d "$TF" ] || { echo "no TestFramework headers under $GS_PREFIX/gnustep"; exit 1; }
 W="${GS_WORK:-$HOME/gs-run}"
-DEV=/data/local/tmp/gsbase
+# Everything lives under /data/local/tests, not /data/local/tmp.  SELinux does
+# not let the shell domain create a socket in /data/local/tmp: that is
+# shell_data_file, whose rules cover directories, files and symlinks and name
+# sock_file nowhere.  Two things need one: gdnc binds an NSMessagePort whose
+# path comes from NSTemporaryDirectory(), and NSStream's socket_cs binds the
+# relative path "test-socket" in its working directory.  /data/local/tests is
+# shell_test_data_file, which policy allows to create a socket and which is
+# otherwise a superset of shell_data_file, execute included.  A directory made
+# under it inherits the label.
+DEV=/data/local/tests/gsbase
 # Bracketed so pkill -f does not match the command line it arrives on
-DEVPAT='/data/local/tmp/[g]sbase/'
-ROOT=/data/local/tmp/gsroot
+DEVPAT='/data/local/tests/[g]sbase/'
+ROOT=/data/local/tests/gsroot
 CONF="$ROOT/etc/GNUstep/GNUstep.conf"
-UHOME=/data/local/tmp/gshome
+UHOME=/data/local/tests/gshome
+TMP=/data/local/tests/gstmp
 EXPECTED="${GS_EXPECTED:-$GS_BASE/.github/scripts/android/expected-failures.txt}"
 
 rm -rf "$W"; mkdir -p "$W"
 adb wait-for-device
 # No `adb root`: restarting adbd takes the device offline under the emulator
-# action. /data/local/tmp is writable without it.
+# action. /data/local/tests is writable without it.
 adb shell 'echo device ready; id' </dev/null
 
 INC="-I$GS_BASE/Headers -I$TF -I$GS_PREFIX/include -I$GS_BASE/Tests/base \
@@ -52,8 +62,9 @@ FLAGS="-fobjc-runtime=gnustep-2.2 -fblocks -fexceptions -DGNUSTEP \
  -DGNUSTEP_BASE_LIBRARY=1 -Wno-deprecated-declarations"
 
 # ------------------------------------------------------------ shared payload
-adb shell "rm -rf $DEV $ROOT $UHOME" >/dev/null 2>&1 </dev/null
-adb shell "mkdir -p $DEV $UHOME/GNUstep/Defaults" >/dev/null 2>&1 </dev/null
+adb shell "rm -rf $DEV $ROOT $UHOME $TMP" >/dev/null 2>&1 </dev/null
+adb shell "mkdir -p $DEV $UHOME/GNUstep/Defaults $TMP" >/dev/null 2>&1 </dev/null
+adb shell "ls -Zd $TMP" </dev/null | tr -d '\r' | sed 's/^/  tmpdir: /'
 cp "$GS_BASE"/Source/obj/libgnustep-base.so.* "$W/" 2>/dev/null || true
 cp "$GS_PREFIX/lib/libobjc.so" "$W/"
 cp "$TOOLCHAIN/sysroot/usr/lib/$GS_TRIPLE/libc++_shared.so" "$W/"
@@ -84,7 +95,7 @@ adb shell "find $ROOT -name gdnc -exec chmod 755 {} + 2>/dev/null; true" >/dev/n
 g=$(adb shell "ls -l \$(find $ROOT -name gdnc | head -1) 2>/dev/null" </dev/null | tr -d '\r')
 echo "  gdnc on device: ${g:-NOT FOUND}"
 echo "  gdnc, run directly:"
-adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV TMPDIR=/data/local/tmp GNUSTEP_CONFIG_FILE=$CONF $ROOT/bin/gdnc --help 2>&1 | head -8; echo rc=\$?" \
+adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV TMPDIR=$TMP GNUSTEP_CONFIG_FILE=$CONF $ROOT/bin/gdnc --help 2>&1 | head -8; echo rc=\$?" \
   </dev/null | tr -d '\r' | sed 's/^/    /'
 
 # Start gdnc before any test runs. It has to see the same TMPDIR as the tests,
@@ -93,12 +104,12 @@ adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV TMPDIR=/data/local/tmp GNUSTEP_CONFIG
 GDNC=$(adb shell "find $ROOT -name gdnc -type f 2>/dev/null | head -1" </dev/null | tr -d '\r')
 if [ -n "$GDNC" ]; then
   adb shell "chmod 755 '$GDNC' 2>/dev/null; true" </dev/null >/dev/null 2>&1 || true
-  adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV TMPDIR=/data/local/tmp \
-    GNUSTEP_CONFIG_FILE=$CONF '$GDNC' 2>/data/local/tmp/gdnc.err" </dev/null >/dev/null 2>&1 || true
+  adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV TMPDIR=$TMP \
+    GNUSTEP_CONFIG_FILE=$CONF '$GDNC' 2>$TMP/gdnc.err" </dev/null >/dev/null 2>&1 || true
   sleep 3
   echo "  gdnc: $GDNC"
   adb shell "ps -A -o USER,PID,NAME 2>/dev/null | grep gdnc || echo '    (no gdnc process)'; \
-    head -4 /data/local/tmp/gdnc.err 2>/dev/null" </dev/null | tr -d '\r' | sed 's/^/    /'
+    head -4 $TMP/gdnc.err 2>/dev/null" </dev/null | tr -d '\r' | sed 's/^/    /'
 else
   echo "  gdnc: NOT FOUND in $ROOT"
 fi
@@ -190,7 +201,7 @@ for d in "$GS_BASE"/Tests/base/*/; do
 
   dp=0; df=0; dh=0; ds=0
   for b in $built; do
-    out=$(adb shell "cd $DEV/$n && LD_LIBRARY_PATH=$DEV PATH=$DEV/Tools:\$PATH TMPDIR=/data/local/tmp \
+    out=$(adb shell "cd $DEV/$n && LD_LIBRARY_PATH=$DEV PATH=$DEV/Tools:\$PATH TMPDIR=$TMP \
       GNUSTEP_CONFIG_FILE=$CONF timeout -s KILL $GS_TIMEOUT ./$b 2>&1; echo RC=\$?" \
       </dev/null | tr -d '\r')
     rc=$(echo "$out" | sed -n 's/^RC=//p' | tail -1)
