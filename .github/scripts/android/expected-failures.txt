@@ -1,0 +1,23 @@
+# Tests that fail on Android and are understood.  A failure whose
+# "directory/file.m:line" appears here does not fail the build; anything else
+# does.  Each entry is a test assumption that does not hold on Android rather
+# than a defect in gnustep-base.
+#
+# The XSLT test reads whatever GNUmakefile is in the working directory.
+# gnustep-tests generates one during a normal run and this runner does not.
+GSXML/basic.m:179
+#
+# gzip level 9 is asserted to be smaller than level 5.  It is not, for this
+# input, with the zlib on the device.
+NSData/additions.m:49
+#
+# Tilde expansion for the current user, which the suite runs as root.
+NSString/tilde.m:48
+#
+# testcat with no arguments is expected to produce output.
+NSTask/launch.m:54
+#
+# /usr does not exist on Android, so the file URL for it is not what the test
+# expects.
+NSURL/basic.m:155
+NSURL/basic.m:157
