@@ -126,6 +126,13 @@ for d in "$GS_BASE"/Tests/base/*/; do
   # every plain file, INCLUDING the .m sources: some tests read their own
   # source back through a file URL
   find "$d" -maxdepth 1 -type f -exec cp {} "$W/$n/" \; 2>/dev/null || true
+  # gnustep-tests instantiates GNUmakefile.in into the working directory before
+  # running a set, and two tests read whatever GNUmakefile they find there:
+  # GSXML/basic.m resolves it as an external entity and looks for the string
+  # MAKEFILES in the result, and NSTask's testcat helper cats it.  Instantiate
+  # the same template so the directory looks the way a normal run leaves it.
+  sed -e 's/@TESTNAMES@//; s^@TESTOPTS@^^; s/@TESTRULES@//' \
+    "$TF/GNUmakefile.in" > "$W/$n/GNUmakefile"
   # data subdirectories, such as NSXMLParser's ParseData
   for sub in "$d"*/; do
     [ -d "$sub" ] || continue
