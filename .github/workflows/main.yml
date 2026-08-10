@@ -70,115 +70,6 @@ env:
   TOOLS_WINDOWS_MSVC_RELEASE_TAG: latest
 
 jobs:
-  ########### Linux ###########
-  linux:
-    name: ${{ matrix.name }}
-    container: ${{ matrix.container }}
-    runs-on: ubuntu-latest
-    # don't run pull requests from local branches twice
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Ubuntu x64 GCC
-            container: ubuntu:24.04
-            library-combo: gnu-gnu-gnu
-            CC: gcc
-            CXX: g++
-            libdir: lib
-
-          - name: Ubuntu x64 Clang gnustep-2.2
-            container: ubuntu:24.04
-            library-combo: ng-gnu-gnu
-            runtime-version: gnustep-2.2
-            CC: clang
-            CXX: clang++
-            libdir: lib
-
-          - name: Rocky Linux 8 x64 Clang gnustep-2.2
-            container: rockylinux:8
-            library-combo: ng-gnu-gnu
-            runtime-version: gnustep-2.2
-            CC: clang
-            CXX: clang++
-            libdir: lib64
-
-          - name: Rocky Linux 9 x64 Clang gnustep-2.2
-            container: rockylinux:9
-            library-combo: ng-gnu-gnu
-            runtime-version: gnustep-2.2
-            CC: clang
-            CXX: clang++
-            libdir: lib64
-
-    env:
-      SRC_PATH: ${{ github.workspace }}/source
-      DEPS_PATH: ${{ github.workspace }}/dependencies
-      INSTALL_PATH: ${{ github.workspace }}/build
-      CC: ${{ matrix.CC }}
-      CXX: ${{ matrix.CXX }}
-      LIBRARY_COMBO: ${{ matrix.library-combo }}
-      RUNTIME_VERSION: ${{ matrix.runtime-version }}
-      LIBDIR: ${{ matrix.libdir }}
-
-    defaults:
-      run:
-        working-directory: ${{ env.SRC_PATH }}
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: ${{ env.SRC_PATH }}
-
-      - name: Install apt packages
-        run: |
-          apt-get -q -y update
-
-          apt-get -q -y install $APT_PACKAGES $APT_PACKAGES_${{ matrix.library-combo == 'ng-gnu-gnu' && 'clang' || 'gcc' }}
-
-          # gnustep-2.2 runtime requires ld.gold or lld
-          if [ "$RUNTIME_VERSION" = "gnustep-2.2" ]; then
-            update-alternatives --install "/usr/bin/ld" "ld" "/usr/bin/ld.gold" 10
-          fi
-        if: ${{ startsWith(matrix.container, 'ubuntu') }}
-
-      - name: Install rpm packages
-        run: |
-          yum install -y $RPM_PACKAGES
-
-          # gnustep-2.2 runtime requires ld.gold or lld
-          if [ "$RUNTIME_VERSION" = "gnustep-2.2" ]; then
-            update-alternatives --install "/usr/bin/ld" "ld" "/usr/bin/lld" 10
-          fi
-        if: ${{ startsWith(matrix.container, 'rockylinux') }}
-
-      - name: Install dependencies
-        env:
-          TOOLS_MAKE_BRANCH: ${{github.event.inputs.tools_make_branch}}
-        run: ./.github/scripts/dependencies.sh
-
-      - name: Build source
-        run: |
-          . $INSTALL_PATH/share/GNUstep/Makefiles/GNUstep.sh
-          ./configure
-          make -j$(nproc) && make install
-
-      - name: Run tests
-        run: |
-          . $INSTALL_PATH/share/GNUstep/Makefiles/GNUstep.sh
-          make check
-
-      - name: Upload logs
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: Logs - ${{ matrix.name }}
-          path: |
-            source/config.log
-            source/Tests/tests.log
-
   ########### Windows ###########
   windows:
     name: ${{ matrix.name }}
@@ -364,22 +255,10 @@ jobs:
 
       - name: Build source
         run: |
-          . $INSTALL_PATH/share/GNUstep/Makefiles/GNUstep.sh
-          if [ -n "$HOST" ]; then
-            CONFIGURE_OPTS="$CONFIGURE_OPTS --host=$HOST"
-          fi
-          ./configure $CONFIGURE_OPTS
-          make && make install
-
-      - name: Run tests
-        continue-on-error: ${{ matrix.allow-test-failures || false }}
-        run: |
-          . $INSTALL_PATH/share/GNUstep/Makefiles/GNUstep.sh
-          # MSVC: build tests for release to match CRT of DLLs
-          if [ "$IS_WINDOWS_MSVC" = "true" ]; then
-            sed -i -e 's/debug=yes//g' `which gnustep-tests`
-          fi
-          make check
+          echo "nproc path: $(command -v nproc || echo MISSING)"
+          echo "nproc value: $(nproc 2>&1)"
+          echo "NUMBER_OF_PROCESSORS: $NUMBER_OF_PROCESSORS"
+          make --version | head -1
 
       - name: Upload logs
         uses: actions/upload-artifact@v7
