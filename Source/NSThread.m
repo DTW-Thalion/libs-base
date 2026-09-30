@@ -2160,15 +2160,18 @@ lockInfoErr(NSString *str)
       event = INVALID_HANDLE_VALUE;
     }
 #else
+  /* With eventfd both ends are one descriptor.  Closing it twice would
+   * close whatever another thread opened with that number in between.
+   */
+  if (outputFd >= 0 && outputFd != inputFd)
+    {
+      close(outputFd);
+    }
+  outputFd = -1;
   if (inputFd >= 0)
     {
       close(inputFd);
       inputFd = -1;
-    }
-  if (outputFd >= 0)
-    {
-      close(outputFd);
-      outputFd = -1;
     }
 #endif
   [lock unlock];

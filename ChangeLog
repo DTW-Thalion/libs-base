@@ -1,3 +1,11 @@
+2026-09-30 Todd White <todd.white@thalion.global>
+
+	* Source/NSThread.m: -[GSRunLoopThreadInfo invalidate] closes the
+	eventfd once.  With eventfd, inputFd and outputFd are the same
+	descriptor, and the second close could close a descriptor another
+	thread had been given in between.
+	* Tests/base/NSThread/runloop_fd_close.m: New test.
+
 2026-09-30 Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Headers/Foundation/NSOperation.h:
